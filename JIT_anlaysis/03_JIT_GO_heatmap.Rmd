@@ -1,0 +1,120 @@
+---
+title: "JIT GO explore"
+author: "Ji Huang"
+date: "2023-01-23"
+output: 
+    html_document:
+        code_folding: show
+        toc: true
+        toc_float: true
+        toc_depth: 2
+---
+
+Summarize the GO terms by:
+1. GOsummaries plots
+2. Heatmap as in Varala et al.
+
+All the GO results were from `topGO` package results, testing on **BP** terms.
+
+Output:
+1. GOsummarize_JIT_topGO.pdf
+2. JIT_GO_plot_heatmap_topGO.png. *need to Run chunks. Knit doesn't work for `pheatmap()`*.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 0. Prep
+
+```{r, message=FALSE}
+library(here)
+library(tidyverse)
+library(GOsummaries)
+
+source(here("src", "functions", "go_enrich.R"))
+
+output_dir = here("result", "JIT", "JIT_genes", "GO")
+```
+
+## 1. GOsummaries plots
+
+```{r loadtopGO, message=FALSE}
+go_topGO <- read_tsv(file = here(output_dir, "topGO_zma",
+                      "GO_result_all_JIT.tsv")) %>% 
+    mutate(query = factor(query, levels = c("j5", "j10", "j15", "j20", 
+                                          "j30", "j45", "j60", 
+                                          "j90", "j120")))
+
+go_topGO %>% count(query)
+```
+
+Save combined GO table for Supp tables. The non-filter one was used for heatmap.
+```{r}
+go_topGO_supp <- go_topGO %>% filter(Significant > 1) %>% 
+    arrange(query) %>% mutate(type = "zma_shoot_JIT")
+
+write_tsv(go_topGO_supp, here("result", "Supp_tables_datasets", 
+                              "zma_shoot_JIT_GO.tsv"))
+```
+
+Filter topGO results:
+
+```{r}
+go_topGO_filter <- go_topGO %>% 
+    filter(Significant > 1) %>% 
+    dplyr::group_by(query) %>% 
+    slice_min(n = 20, order_by = w01Fisher1  ) %>% 
+    dplyr::select(Term = Term, Score = w01Fisher1, query = query) %>% 
+    dplyr::ungroup()
+```
+
+Plot the JIT genes GOsummarize plots.
+
+```{r, message=FALSE, results = FALSE}
+pdf(here(output_dir, "topGO_zma",
+         "GOsummarize_JIT_topGO.pdf"),
+    width = 3, height = 3)
+map(unique(go_topGO_filter$query), plot_go_summary_JIT, 
+    go_table = go_topGO_filter)
+dev.off()
+```
+
+## 2. GO heatmap
+
+```{r, message=FALSE}
+library(RColorBrewer)
+library(pheatmap)
+library(UpSetR)
+```
+
+Prepare plot data for heatmap.
+
+```{r}
+pdat_go_heatmap <- prepare_GO_heatmap_data(topGO_table = go_topGO)
+```
+
+Plot and saved the heatmap. 
+
+```{r}
+## Prepare color palette.
+fivenum(pdat_go_heatmap)
+
+bk1 <- c(seq(0, 
+             (max(pdat_go_heatmap, na.rm = TRUE)+0.5), 
+             by=0.2))
+
+mycolor <- c(colorRampPalette(brewer.pal(9,"Blues"))(length(bk1)-2))
+
+# Plot
+png(filename = here(output_dir, "topGO_zma",
+                    "JIT_GO_plot_heatmap_topGO.png"), 
+    width = 3, height = 4.5, units = "in", res=600)
+p1 <- pheatmap(pdat_go_heatmap, cluster_rows = F, cluster_cols = F, color=mycolor,
+         show_rownames=F, breaks = bk1, drop_levels = F,
+         main = "Maize JIT GO terms (BP)",
+         angle_col=0,
+         fontsize_col = 14,
+         border_color = "NA")
+p1
+dev.off()
+```

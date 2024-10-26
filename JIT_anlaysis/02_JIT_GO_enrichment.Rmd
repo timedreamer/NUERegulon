@@ -1,0 +1,142 @@
+---
+title: "Maize JIT genes GO enrichment"
+author: "Ji Huang"
+date: "2023-01-23"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+        toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Maize Just-In-Time gene GO enrichment analysis.
+
+## 0. Prep
+
+```{r, message=FALSE}
+library(tidyverse)
+library(here)
+library(topGO)
+
+source(here("src", "functions", "go_enrich.R"))
+
+output_dir = here("result", "JIT", "JIT_genes", "GO")
+```
+
+```{r}
+jit_all <- read_tsv(here("result", "JIT", "JIT_genes",
+                         "maize_JIT_edge_all_genes_FCcutoff2_withlog2FC.tsv"))
+
+
+jit_result <- jit_all %>% group_split(time)
+jit_list <- jit_result %>% map(pull, gene)
+
+names(jit_list) <- jit_all %>% group_by(time) %>% 
+    group_keys() %>% pull(time)
+
+```
+## 1. topGO
+
+```{r}
+topGO_enrichment_analysis <- function(GOmapping_file, background, 
+                                      query_gene, 
+                                      ontology = c("BP", "MF", "CC"), 
+                                      nodeSize = 10,
+                                      pcutoff = 0.05) {
+    
+    # Function input check
+    stopifnot("`GO file` does not exist!" = file.exists(GOmapping_file))
+    stopifnot("`background` must be character." = is.character(background))
+    stopifnot("`query_gene` must be character." = is.character(query_gene))
+    ontology <- match.arg(ontology)
+    stopifnot("`nodeSize` must be numeric" = is.numeric(nodeSize))
+    
+    ## 1. Prep geneID to GO table
+    geneID2GO <- readMappings(file = GOmapping_file)
+    
+    ## 2. keep genes in the background
+    geneID2GO <- geneID2GO[names(geneID2GO) %in% background]
+    geneNames <- names(geneID2GO)
+    
+    ## 3. Define interested genes
+    myInterestingGenes <- query_gene
+    geneList <- factor(as.integer(geneNames %in% myInterestingGenes))
+    names(geneList) <- geneNames
+    
+    ## 4. Run enrichment
+    GOdata <- new("topGOdata",
+                  description = "weight01 Fisher's exact test ", 
+                  ontology = ontology,
+                  allGenes = geneList, 
+                  nodeSize = nodeSize,
+                  annot = annFUN.gene2GO, 
+                  gene2GO = geneID2GO)
+    
+    resultFisher1 <- runTest(GOdata, 
+                             algorithm = "weight01", statistic = "fisher")
+    
+    allRes <- GenTable(GOdata, w01Fisher1 = resultFisher1,
+                       ranksOf = "w01Fisher1", 
+                       topNodes = 200,
+                       numChar=1000) %>%
+        dplyr::filter(w01Fisher1 < pcutoff)
+    
+    return(allRes)
+    
+}
+```
+```{r topGO_func, collapse=TRUE, echo = FALSE, eval= FALSE}
+
+topGO_listRun <- function(term_name, query_list){
+    
+    stopifnot(is.character(term_name))
+    
+    query_genes <- query_list[[term_name]]
+    
+    top_result <- topGO_enrichment_analysis(GOmapping_file = GAMER_mapping,
+                                 background = background_gene, 
+                                 query_gene = query_genes,
+                                 ontology = "BP", 
+                                 nodeSize = 10, pcutoff = 0.05)
+    
+    if (nrow(top_result) > 0) {
+        
+        top_result <- top_result %>% 
+            mutate(query = term_name)
+        
+        return (top_result)
+        
+    } else {
+        
+        return(NULL)
+    }
+    
+}
+
+```
+
+topGO runs pretty slow, may take ~20min.
+
+```{r topGO_run}
+GAMER_mapping <- here("data", "external_data", "zmaGO_tab_4topGO.tsv")
+
+background_gene <- read_tsv(here("result","DEgenes", 
+                                 "mts_background_31577.tsv")) %>% 
+    pull(bg_gene)
+```
+
+Save the GO results. The topGO method returns many enriched terms.
+
+```{r}
+go_topGO <- map_dfr(names(jit_list), topGO_listRun, 
+                     query_list = jit_list)
+go_topGO %>% count(query)
+
+write_tsv(go_topGO, 
+          file = here(output_dir, "topGO_zma",
+                      "GO_result_all_JIT.tsv"))
+```

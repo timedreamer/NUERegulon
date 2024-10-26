@@ -1,0 +1,329 @@
+---
+title: "Plot Nmetabolism genes in NxTime sets"
+author: "Ji Huang"
+date: "2023-03-28"
+output: 
+    html_document:
+        code_folding: hide
+        toc: true
+        toc_float: true
+        toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 0. Prep
+
+```{r, message=FALSE}
+library(here)
+library(tidyverse)
+library(glue)
+library(ggforce)
+library(ggsci)
+library(ClusterGVis)
+library(RColorBrewer)
+library(viridisLite)
+library(DT)
+
+expr_name <- "zmaShoot_Npath_NxT_expr.pdf"
+heatmap_name_order <- "zmaShoot_Npath_NxT_log2FCunscaled_geneOrder_heatmap.pdf"
+
+```
+
+## 1. Load data
+
+```{r, message=FALSE}
+mts_quant <- read_tsv(here("result", "quant_normalized_expr_all.tsv.gz"))
+
+zma_shoot <- read_tsv(here("result", "DEgenes", "edge", 
+                           "zma_NxTgenes_df5_edge.tsv"))
+
+zma_root <- read_tsv(here("result", "DEgenes", "root",
+                          "zma_root_NxTgenes_df5_edge_20210501_2294genes.tsv"))
+
+## Nmetabolism genes from `008_Npathway_gene_combine_with_name.R`.
+Npath_genes <- read_tsv(here("result", "misc", 
+                             "zma_Npathway_genes_with_names_20230419.tsv")) %>% 
+    distinct()
+
+Npath_genes <- Npath_genes %>% 
+    filter(!pathway_step %in% c("cyanate degradation",
+                                "Glycolate Oxidase"))
+```
+
+## 2. How many Npathyway genes in NxTime Shoot and Root?
+
+These are possible functional genes in Nitrogen metabolism in maize.
+
+```{r}
+Npath_genes_shoot <- Npath_genes %>% 
+    filter(sgene %in% zma_shoot$gene) %>% 
+    select(pathway_step, sgene, zma_gene_symbol) %>% 
+    distinct()
+
+Npath_genes_root <- Npath_genes %>% 
+    filter(sgene %in% zma_root$gene) %>% 
+    select(pathway_step, sgene, zma_gene_symbol) %>% 
+    distinct()
+
+Npath_genes_summary <- Npath_genes %>% 
+    select(pathway_step, sgene) %>% distinct() %>% 
+    count(pathway_step, name = "zma_all") %>% 
+    left_join(
+        Npath_genes_shoot %>% 
+            select(pathway_step, sgene) %>% distinct() %>% 
+            count(pathway_step, name = "zma_Shoot"),
+        by = ("pathway_step")
+    ) %>% 
+    left_join(
+        Npath_genes_root %>% 
+            select(pathway_step, sgene) %>% distinct() %>% 
+            count(pathway_step, name = "zma_Root"),
+        by = ("pathway_step")
+    ) %>% 
+    replace_na(list(zma_Shoot=0, zma_Root=0))
+```
+
+Nmetabolism genes summary.
+
+```{r}
+Npath_genes_summary %>% DT::datatable()
+```
+
+Nmetabolism genes in **Shoot**
+
+```{r}
+Npath_genes_shoot %>% DT::datatable()
+```
+
+Nmetabolism genes in **Root**
+
+```{r}
+Npath_genes_root %>% DT::datatable()
+```
+
+## 3. Plot the gene expression line plots.
+
+For Nmetabolism genes that are in the Zma-Shoot NxTime gene list.
+
+Prep input data.
+```{r}
+## Convert to long format for ggplot2.
+mts_quant <- mts_quant %>% filter(geneid %in% Npath_genes_shoot$sgene) %>% 
+    rename(`0mS1-noN` = `0mS1`, `0mS2-noN` = `0mS2`, `0mS3-noN` = `0mS3`) %>% 
+    pivot_longer(col=-geneid, names_to = "condition", values_to = "quant") %>% 
+    separate(condition, into = c("condition", "Ntreatment"), sep="-") %>% 
+    separate(condition, sep = "mS", into = c("time", "rep")) %>% 
+    mutate(time = as.integer(time))
+
+## In order to let both curves start from the same point (time0).
+## I have to duplicate the time0 data with Ntreatment=="N". I believe this is also
+## what Kranthi used.
+
+mts_time0 <- mts_quant %>% filter(time==0) %>% mutate(Ntreatment="N")
+mts_quant <- bind_rows(mts_quant, mts_time0)
+gene <- unique(mts_quant$geneid)
+
+print_gene_numebr <- length(gene)
+print_gene_id <- paste0(gene, collapse = ",")
+message(glue('There are {print_gene_numebr} genes in the total expression matrix'))
+
+mts_quant <- mts_quant %>% left_join(Npath_genes_shoot, by = c("geneid"="sgene")) %>% 
+    mutate(geneid = paste0(geneid, "_", zma_gene_symbol, "_", gsub(" ", "",pathway_step))) %>% 
+    arrange(pathway_step, zma_gene_symbol)
+```
+
+Plot and save.
+
+```{r}
+final_page = ceiling(print_gene_numebr/9) # changed page=i to page=1
+
+start_time <- Sys.time()
+
+pdf(here("result", "DEgenes", "expr_plots", 
+         expr_name), 
+    width = 14, height = 12)
+
+for (i in 1:final_page) {
+    p1 <- ggplot(data= mts_quant, aes(x=time, y=quant, color=Ntreatment))+
+        geom_point() +
+        facet_wrap_paginate(~ geneid, ncol = 3, nrow = 3, page = i, scales = "free") +
+        cowplot::theme_half_open()+
+        scale_x_continuous(breaks=c(0,5,10,15,20,30,45,60,90,120)) + 
+        scale_y_continuous()+
+        xlab("Time (min)") +
+        ylab("Normalized expression (UMI)")+
+        stat_smooth(method = lm, 
+                    formula = y ~ splines::ns(x, 5), 
+                    se = FALSE) +
+        theme(panel.grid.major = element_line(color = "grey80",
+                                              linewidth = 0.2,
+                                              linetype = 1))
+    print(p1)
+}
+
+dev.off()
+
+end_time <- Sys.time()
+```
+
+```{r}
+message("Saved at ", here("result", "DEgenes", "expr_plots", expr_name))
+message("It took ", end_time - start_time)
+```
+
+## 4. Plot the log2FC heatmap for Nmetabolism genes
+
+```{r}
+## Load the log2FC data.
+source(here("src", "functions", "load_clean_zma_shoot_log2FC_data.R"))
+
+## All genes EXCEPT N-metabolism genes
+nxt_foldChange_nxt <- nxt_foldChange %>% 
+    filter(!geneid %in% Npath_genes_shoot$sgene)
+
+## ONLY N-metabolism genes
+nxt_foldChange <- nxt_foldChange %>% 
+    filter(geneid %in% Npath_genes_shoot$sgene)
+
+gene <- unique(nxt_foldChange$geneid)
+length(unique(gene))
+```
+
+The Nmetabolism genes are mostly activated.
+
+```{r, fig.height = 3, fig.width = 5}
+# A quick view on the hist plot
+pdf(file = here("result", "DEgenes", "heatmap", "zma_shoot_nxt_log2_hist.pdf"),
+    width = 4.2, height = 2.8)
+line <- par(lwd=0.5)
+hist(nxt_foldChange_nxt$log2FC, probability = T, breaks = 100, 
+     col = "grey", xlim=c(-6,8), xlab = "log2FC", 
+     main = expression(italic("All Zma Shoot NxTime genes")),
+     border = "grey30")
+hist(nxt_foldChange$log2FC, probability = T, breaks = 100, 
+     col = "darkgreen", xlim=c(-6,8), xlab = "log2FC", add=F,
+     main = expression(italic("Npathway genes in Zma Shoot")),
+     border = "grey30")
+dev.off()
+```
+
+```{r}
+ks.test(nxt_foldChange_nxt$log2FC, # all NxT genes
+        nxt_foldChange$log2FC,     # Nmetabolism genes
+        alternative = "greater")   # one-side test
+```
+
+add two histogram together.
+```{r}
+tt1 <- tibble(log2FC = nxt_foldChange_nxt$log2FC,
+              type = "All NxTime")
+tt2 <- tibble(log2FC = nxt_foldChange$log2FC,
+              type = "Npathway")
+
+tt3 <- bind_rows(tt1, tt2)
+
+p_hist <- ggplot(tt3, aes(x=log2FC, color=type, fill=type)) + 
+    geom_histogram(aes(y=after_stat(density)), alpha=0.2, 
+                   position="identity", bins = 60) +
+    scale_color_manual(values=c("#999999", "darkgreen")) + 
+    scale_fill_manual(values=c("#999999", "darkgreen"))+
+    cowplot::theme_cowplot()
+
+ggsave(filename = here("result", "DEgenes", "heatmap", 
+                       "zma_shoot_nxt_log2_hist_combined.pdf"),
+       p_hist, height = 2, width = 5)
+```
+
+Add gene names.
+
+```{r}
+fc_wide <- nxt_foldChange %>% 
+    pivot_wider(names_from = time, names_prefix = "T",
+                values_from = log2FC) %>% 
+    select(geneid, T5, T10, T15, T20, T30, T45, T60, T90, T120) %>% 
+    drop_na() %>% 
+    as.data.frame()
+
+rownames(fc_wide) <- fc_wide$geneid
+fc_wide$geneid <- NULL
+
+# Add Nmetabolism gene names. If in Liu et al, uses their names. If not, use the maizeGDB names.
+all_Npath_data <- tibble(rowid = which(rownames(fc_wide) %in% Npath_genes_shoot$sgene),
+                         geneid = rownames(fc_wide)[which(rownames(fc_wide) %in% Npath_genes_shoot$sgene)]) %>% 
+    left_join(Npath_genes_shoot, by = c("geneid"="sgene"))
+
+rownames(fc_wide)[all_Npath_data$rowid] <- all_Npath_data$zma_gene_symbol
+markGenes = rownames(fc_wide)[all_Npath_data$rowid]
+
+## num of clusters and heatmap color pallet.
+cluster_num <- 5
+rdbu <- rev(brewer.pal(9, "PRGn"))
+```
+
+
+```{r}
+#getClusters(fc_wide)
+cm_zma2 <- clusterData(exp = fc_wide,
+                      cluster.method = "kmeans",
+                      cluster.num = cluster_num, 
+                      scaleData = FALSE)
+
+```
+
+```{r}
+tt1 <- Npath_genes_shoot %>% rename(gene = zma_gene_symbol)
+
+cm_zma2$wide.res <- cm_zma2$wide.res %>% 
+    left_join(tt1, by = "gene") %>% 
+    mutate(cluster_new = case_when(pathway_step %in% c("Ammonia Transporters",
+                                                       "Nitrate Transporters") ~ 1,
+                                   pathway_step %in% c("Nitrite Reductase",
+                                                       "Nitrate Reductase") ~ 2,
+                                   pathway_step %in% c("Glutamate Decarboxylase",
+                                                       "Glutamate Dehydrogenase",
+                                                       "Glutamate Synthase",
+                                                       "Glutamine Synthetase") ~ 3,
+                                   pathway_step %in% c("Asparaginase",
+                                                       "Asparagine Synthetase",
+                                                       "Aspartate Aminotransferase") ~ 4,
+                                   pathway_step %in% c("Carbamoylphosphate Synthase",
+                                                       "Carbonic Anhydrase",
+                                                       "Nitrilase") ~ 5)) %>% 
+    arrange(cluster_new) %>% 
+    select(everything(), -cluster, cluster=cluster_new, -pathway_step, -sgene)
+
+
+## Update long.res
+tt3 <- cm_zma2$wide.res %>% select(gene, cluster)
+
+cm_zma2$long.res <- cm_zma2$long.res %>% left_join(tt3, by = "gene") %>% 
+    select(everything(), -cluster.x, cluster=cluster.y) %>% 
+    arrange(cluster)
+```
+
+```{r}
+p1 <- visCluster(object = cm_zma2,
+                 cluster.order = 1:5,
+                 ht.col.list = list(
+                     col_range = c(-2,0,3),
+                     col_color = c(rdbu[1],rdbu[5],rdbu[9])
+                 ),
+                 show_row_dend = F,
+                 annnoblock.text = T,
+                 markGenes = markGenes,
+                 markGenes.side = "right",
+                 plot.type = "heatmap",
+                 column_names_rot = 45,
+                 ctAnno.col = ggsci::pal_nejm()(5),
+                 sample.col = rev(viridis(n = 9)))
+
+pdf(file = here("result", "DEgenes", "heatmap", heatmap_name_order),
+    width = 4, height = 6)
+
+p1
+dev.off()
+```
+

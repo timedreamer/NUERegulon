@@ -1,0 +1,90 @@
+---
+title: "JIT motif enrichment"
+author: "Ji Huang"
+date: "2023-02-07"
+output: 
+    html_document:
+        code_folding: show
+        toc: true
+        toc_float: true
+        toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 0. Prep
+
+```{r, message=FALSE}
+library(tidyverse)
+library(here)
+library(ComplexHeatmap)
+library(circlize)
+library(RColorBrewer)
+library(UpSetR)
+
+source(here("src", "functions", "motif_JIT.R"))
+```
+
+Load the Matt's cluster names.
+
+```{r}
+cluster80 <- readxl::read_xlsx(here("data", "external_data", 
+                            "ClusterDesc_NCor045.xlsx")) %>% 
+    janitor::clean_names() %>% 
+    mutate(ID = paste0("cluster_", cluster))
+```
+
+## 1. Matt's cluster 80 motifs
+
+The MEME-SEA was done on 2023-01-27 (with order2 bfile). The output was downloaded from HPC `/scratch/cgsb/coruzzi/jh6577/project/maize/mts_201906/result/JIT_genes/individual_time/SEA_result_cluster80`.
+
+```{r}
+output_dir <- here("result", "JIT", "JIT_genes", "motif",
+                                 "SEA_result_cluster80")
+```
+
+```{r}
+plot_heatmap_motif(outdir = output_dir,
+                   motif_db = "cluster80", qval_cutoff = 0.05, ENR_cutoff = 3)
+```
+
+```{r}
+f_files <- list.files(output_dir, pattern = "sea.tsv", 
+                         recursive = TRUE, full.names = T)
+motif_cluster <- load_SEA_output(SEA_output_dir = output_dir) %>% 
+    filter(QVALUE < 0.05)  %>% filter(ENR_RATIO > 3) %>% 
+    left_join(., cluster80, by = "ID") %>% 
+    dplyr::select(-DB, -ALT_ID) %>% 
+    dplyr::mutate(type = "zma_shoot_JIT_cluster80")
+
+write_tsv(motif_cluster, here(output_dir, 
+                              "zma_shoot_JIT_cluster80_motif.tsv"))
+```
+
+## 2. JASPAR 656 motifs
+
+The MEME-SEA was done on 2023-01-27 (with order2 bfile). The output was downloaded from HPC `/scratch/cgsb/coruzzi/jh6577/project/maize/mts_201906/result/JIT_genes/individual_time/SEA_result_JASPA2022`.
+
+```{r}
+output_dir <- here("result", "JIT", "JIT_genes", "motif",
+                                 "SEA_result_JASPA656")
+```
+
+```{r}
+plot_heatmap_motif(outdir = ,
+                   motif_db = "JASPAR656", qval_cutoff = 0.05, ENR_cutoff = 3)
+```
+
+```{r}
+f_files <- list.files(output_dir, pattern = "sea.tsv", 
+                         recursive = TRUE, full.names = T)
+motif_cluster <- load_SEA_output(SEA_output_dir = output_dir) %>% 
+            filter(QVALUE < 0.05)  %>% filter(ENR_RATIO > 3) %>% 
+    dplyr::select(-DB, -ALT_ID) %>% 
+    dplyr::mutate(type = "zma_shoot_JIT_JASPAR656")
+
+write_tsv(motif_cluster, here(output_dir, 
+                              "zma_shoot_JIT_JASPAR656_motif.tsv"))
+```

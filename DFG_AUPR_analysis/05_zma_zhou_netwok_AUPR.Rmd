@@ -1,0 +1,210 @@
+---
+title: "Zhou networks AUPR"
+author: "Ji Huang"
+date: "2023-04-04"
+output: 
+    html_document:
+        code_folding: hide
+        toc: true
+        toc_float: true
+        toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The paper is: [Meta Gene Regulatory Networks in Maize Highlight Functionally Relevant Regulatory Interactions](https://academic.oup.com/plcell/article/32/5/1377/6118116)
+
+The data was downloaded from: https://conservancy.umn.edu/handle/11299/212030
+
+Outputs: 
+1. `02_zma_zhou_networks_AUPR.pdf`
+2. `02_zma_zhou_networks_summary.tsv`
+3. `02_zma_zhou_networks_AUPR_dumbell.pdf`
+
+## 0. Prep
+
+```{r, message=FALSE}
+library(here)
+library(tidyverse)
+library(precrec)
+library(glue)
+
+source(here("src", "functions","ggplot2_image_settings.R"))
+
+source(here("src", "functions", "aupr_functions.R"))
+
+rep_times <- 1000
+
+ntwk_dir <- here("data", "external_data","Zhou_network_2020", "rf_100k")
+
+tf_4paper <- read_tsv(here("result", "DFG", 
+                           "TF_withTARGET_4paper_20230505.txt")) %>% 
+    pull(geneID)
+```
+
+```{r, message=FALSE, collapse=TRUE}
+
+## 1. Load GRN
+load_network <- function(ntwk_file ) {
+    grn <- read_tsv(ntwk_file) %>% 
+        dplyr::rename(weight = score)
+    return(grn)
+}
+```
+
+Load all maize TARGET results.
+
+```{r, message=FALSE}
+ptarget_all <- load_zma_target() %>% 
+    filter(regulator %in% tf_4paper)
+```
+
+## 1. Load networks and plot PR curves.
+
+```{r}
+ntwk_names <- list.files(ntwk_dir)
+```
+
+```{r}
+list_plots <- list()
+
+ntwk_summary <- tibble(
+    nid = "rm1", 
+    aupr = 0.88, aupr_max = 0.88, aupr_min = 0.88, aupr_mean =0.88,
+    roc = 0.88, roc_max = 0.88, roc_min = 0.88,
+    pvalue = 0.88
+)
+```
+
+
+```{r}
+for (i in ntwk_names) {
+    
+    message("Processing network: ", i)
+    
+    dfg <- load_network(here(ntwk_dir, i))
+    all_regulator <- unique(dfg$regulator)[unique(dfg$regulator) %in%
+                                           unique(ptarget_all$regulator)]
+    ptarget <- ptarget_all %>% 
+        filter(regulator %in% all_regulator)
+    
+    filter_edge <- ptarget$edge
+    
+    num_tf_with_TARGET <- length(all_regulator)
+    
+    message("There are a total of ", num_tf_with_TARGET, " TFs with TARGET data in the network.");
+    
+    sort(all_regulator)
+    
+    ntwk_1 <- run_aupr(input_network = dfg, rep_times = rep_times)
+    
+    ## AUPR
+    GRN_aupr <- round(auc(ntwk_1$mmcurves)[2,4], 3)
+    rand_max_aupr <- round(auc(ntwk_1$mmcurves)[4,4], 3)
+    rand_min_aupr <- round(auc(ntwk_1$mmcurves)[6,4], 3)
+    
+    mean_aupr <-  round(mean(ntwk_1$rand_ntwk), 3)
+    
+    ## ROC
+    GRN_roc <- round(auc(ntwk_1$mmcurves)[1,4], 3)
+    rand_max_roc <- round(auc(ntwk_1$mmcurves)[3,4], 3)
+    rand_min_roc <- round(auc(ntwk_1$mmcurves)[5,4], 3)
+    
+    ntwk_short <- str_remove(i, ".tsv.gz")
+    pval <- round((rep_times - sum(auc(ntwk_1$mmcurves)[2,4] > ntwk_1$rand_ntwk))/rep_times, 3)
+    ptitle1 <- glue(ntwk_short, " AUPR=", {GRN_aupr})
+    ptitle2 <- glue("Rand_max=", {rand_max_aupr}, " ",
+                    "Rand_min=", {rand_min_aupr}, " ",
+                    "Rand_mean=", {mean_aupr}, "\n",
+                    {num_tf_with_TARGET}, " TFs with TARGET data. ", 
+                    "Pvalue = ", pval)
+    p_aupr <- plot_PRcurve(input_data = ntwk_1$mmcurves) +
+        labs(title = ptitle1, subtitle = ptitle2,
+             caption = glue("Rep", rep_times))
+    
+    list_plots[[i]] <- p_aupr
+    
+    ntwk_summary <- ntwk_summary %>% 
+        add_row(nid = ntwk_short, 
+                aupr = GRN_aupr, 
+                aupr_max = rand_max_aupr, aupr_min = rand_min_aupr,
+                aupr_mean = mean_aupr,
+                roc = GRN_roc, roc_max = rand_max_roc, roc_min = rand_min_roc,
+                pvalue = pval)
+
+}
+```
+
+## 2. Save the output and PR curves.
+
+```{r}
+pdf(here("result", "other_networks", "02_zma_zhou_networks_AUPR_4paper.pdf"), 
+    width = 5, height = 5)
+list_plots
+dev.off()
+```
+
+Save network summary.
+
+```{r}
+studies <- readxl::read_excel(here("data", "external_data", 
+                                   "Zhou_network_2020", "studies.xlsx"))
+
+ntwk_summary <- ntwk_summary %>% 
+    filter(nid != "rm1") %>% 
+    left_join(studies, by = "nid")
+
+write_tsv(ntwk_summary, 
+          here("result", "other_networks", 
+               "02_zma_zhou_networks_summary_4paper.tsv"))
+```
+
+## 3. Plot dumbell plot for the AUPR.
+
+Red is the network AUPR, grey is the random_max AUPR.
+
+```{r}
+library(ggalt)
+
+ntwk_summary <- read_tsv(here("result", "other_networks", 
+               "02_zma_zhou_networks_summary_4paper.tsv"))
+
+## order by mean
+ntwk_summary <- ntwk_summary %>% 
+    mutate(max_order = aupr - aupr_mean) %>% 
+    mutate(nid_name = if_else(
+        subid == "z",
+        paste0(study, "_", note, "[", sample_size, "]"),
+        paste0(study, "_", subid, "[", sample_size, "]")
+        )
+    )
+
+## Ordering by improvement
+ntwk_summary <- ntwk_summary %>% 
+        arrange(max_order) %>% 
+    mutate(nid_name = factor(nid_name, levels = nid_name))
+
+```
+
+Plot the mean AUPR.
+```{r}
+p3 <- ggplot(ntwk_summary, aes(y=nid_name, x=aupr, xend=aupr_mean)) + 
+  geom_dumbbell(size=1.5, color="#e3e2e1", 
+                colour_x = "#e41a1c", colour_xend = "gray56",
+                dot_guide=FALSE, show.legend = TRUE) +
+  labs(x="AUPR", y=NULL, title="Networks' AUPR") +
+  theme_minimal() +
+  theme(panel.grid.major.x=element_line(size=0.05)) +
+  theme(panel.grid.major.y=element_blank())
+p3
+```
+
+```{r}
+pdf(here("result", "other_networks", 
+         "02_zma_zhou_networks_AUPR_dumbell_4paper_meanAUPR.pdf"), 
+    width = 6, height = 6)
+p3
+dev.off()
+```
